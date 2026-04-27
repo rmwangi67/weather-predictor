@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  weather-predictor:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_ENV=development
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  weather-predictor-test:
+    build: .
+    ports:
+      - "5001:5000"
+    environment:
+      - FLASK_ENV=testing
+    command: python -m pytest tests/ -v
+    profiles:
+      - test

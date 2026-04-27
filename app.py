@@ -6,6 +6,7 @@ A simple Flask application that provides weather predictions.
 from flask import Flask, request, jsonify
 import random
 import logging
+from werkzeug.exceptions import BadRequest
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -34,9 +35,12 @@ def predict():
     """
     try:
         data = request.get_json()
-        if not data:
+        if data is None or not isinstance(data, dict):
             return jsonify({"error": "Invalid JSON"}), 400
         
+        if "city" not in data:
+            return jsonify({"error": "City name is required"}), 400
+            
         city = data.get("city", "").strip()
         if not city:
             return jsonify({"error": "City name is required"}), 400
@@ -49,6 +53,9 @@ def predict():
             "prediction": prediction
         }), 200
     
+    except BadRequest as e:
+        logger.error(f"Bad request in predict endpoint: {str(e)}")
+        return jsonify({"error": "Invalid JSON"}), 400
     except Exception as e:
         logger.error(f"Error in predict endpoint: {str(e)}")
         return jsonify({"error": "Internal server error"}), 500
