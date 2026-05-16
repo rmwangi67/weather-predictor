@@ -43,3 +43,4 @@ Thumbs.db
 # Project specific
 .env
 *.log
+docker-compose.override.yml

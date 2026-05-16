@@ -1,8 +1,8 @@
-version: '3.8'
-
 services:
   weather-predictor:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "5000:5000"
     environment:
@@ -14,6 +14,10 @@ services:
       retries: 3
       start_period: 5s
     restart: unless-stopped
+    # Development note: removed unsupported `develop.mount` / `develop.open` keys
+    # Use `docker-compose.override.yml` (not committed to CI) for local dev-only overrides.
+    volumes:
+      - .:/app
 
   weather-predictor-test:
     build: .
