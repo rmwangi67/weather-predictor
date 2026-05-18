@@ -4,19 +4,25 @@ A Flask application that provides real-time weather for Kenyan counties.
 """
 
 import os
-
-from flask import Flask, request, jsonify
 import json
 import logging
 import urllib.request
 import urllib.error
+from urllib.parse import urlencode
+
+from flask import Flask, request, jsonify
 from werkzeug.exceptions import BadRequest
 
 from kenyan_counties import KENYAN_COUNTIES, get_county_by_name
 
 app = Flask(__name__)
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Change this via env var in Docker/CI: APP_VERSION=1.0.3 etc.
+APP_VERSION = os.environ.get("APP_VERSION", "1.0")
+TIMEZONE = os.environ.get("TIMEZONE", "Africa/Nairobi")
 
 WEATHER_CODE_MAP = {
     0: "clear", 1: "mainly clear", 2: "partly cloudy", 3: "overcast",
@@ -31,53 +37,97 @@ WEATHER_CODE_MAP = {
 }
 
 
-def fetch_current_weather(latitude, longitude):
+def fetch_current_weather(latitude: float, longitude: float) -> dict:
     """Fetch real-time weather from Open-Meteo API."""
-    url = (
-        f"https://api.open-meteo.com/v1/forecast"
-        f"?latitude={latitude}&longitude={longitude}"
-        f"&current_weather=true&timezone=Africa%2FNairobi"
-    )
-    with urllib.request.urlopen(url, timeout=10) as response:
-        data = json.loads(response.read().decode())
-    current = data.get("current_weather")
-    if not current:
-        raise ValueError("No current weather returned by API")
-
-    return {
-        "temperature": current.get("temperature"),
-        "windspeed": current.get("windspeed"),
-        "winddirection": current.get("winddirection"),
-        "weathercode": current.get("weathercode"),
-        "condition": WEATHER_CODE_MAP.get(current.get("weathercode"), "unknown"),
-        "time": current.get("time"),
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "current_weather": "true",
+        "timezone": TIMEZONE,
     }
+    url = "https://api.open-meteo.com/v1/forecast?" + urlencode(params)
+
+    try:
+        with urllib.request.urlopen(url, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8"))
+
+        current = data.get("current_weather")
+        if not current:
+            raise ValueError("No current weather returned by API")
+
+        code = current.get("weathercode")
+        return {
+            "temperature": current.get("temperature"),
+            "windspeed": current.get("windspeed"),
+            "winddirection": current.get("winddirection"),
+            "weathercode": code,
+            "condition": WEATHER_CODE_MAP.get(code, "unknown"),
+            "time": current.get("time"),
+        }
+
+    except urllib.error.HTTPError as e:
+        # API responded but with error status code (e.g., 4xx/5xx)
+        logger.error("Open-Meteo HTTPError: %s", e)
+        raise
+    except urllib.error.URLError as e:
+        # Network/DNS/timeout errors
+        logger.error("Open-Meteo URLError: %s", e)
+        raise
+
+
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({
+        "message": "Weather Predictor API is running",
+        "version": APP_VERSION,
+        "endpoints": {
+            "health": "/health",
+            "version": "/version",
+            "predict": "/predict (POST)",
+        }
+    }), 200
 
 
 @app.route("/health", methods=["GET"])
 def health():
     """Health check endpoint."""
-    return jsonify({"status": "healthy"}), 200
+    return jsonify({"status": "OK"}), 200
 
 
-@app.route("/predict", methods=["POST"])
+@app.route("/version", methods=["GET"])
+def version():
+    return jsonify({"version": APP_VERSION}), 200
+
+
+@app.route("/predict", methods=["GET", "POST"])
 def predict():
     """
     Get real-time weather for a Kenyan county.
-    
-    Request JSON:
-        - county (str): Name of the Kenyan county
-        - all_counties (bool): If true, return weather for all counties
-    
-    Response JSON:
-        - county/counties with current weather data
-    """
-    try:
-        data = request.get_json()
-        if data is None or not isinstance(data, dict):
-            return jsonify({"error": "Invalid JSON"}), 400
 
-        # Get weather for all counties
+    POST Request JSON:
+      - county (str): Name of the Kenyan county
+      - all_counties (bool): If true, return weather for all counties
+
+    Response JSON:
+      - county/counties with current weather data
+    """
+
+    # Helpful message so browser/GET doesn't show 405
+    if request.method == "GET":
+        return jsonify({
+            "message": "Use POST with JSON.",
+            "examples": [
+                {"county": "Nairobi"},
+                {"all_counties": True}
+            ]
+        }), 200
+
+    try:
+        data = request.get_json(silent=False)
+        if data is None or not isinstance(data, dict):
+            return jsonify({"error": "Invalid JSON body"}), 400
+
+        # Get weather for all counties (warning: can be slow)
         if data.get("all_counties", False):
             counties_data = []
             for county in KENYAN_COUNTIES:
@@ -91,30 +141,28 @@ def predict():
             return jsonify({"counties": counties_data}), 200
 
         # Get weather for a specific county
-        county_name = data.get("county", "").strip()
-        if county_name:
-            county = get_county_by_name(county_name)
-            if county is None:
-                return jsonify({"error": f"County '{county_name}' not found"}), 404
+        county_name = str(data.get("county", "")).strip()
+        if not county_name:
+            return jsonify({"error": "Provide 'county' or set 'all_counties': true"}), 400
 
-            weather = fetch_current_weather(county["latitude"], county["longitude"])
-            return jsonify({
-                "county": county["name"],
-                "latitude": county["latitude"],
-                "longitude": county["longitude"],
-                "current_weather": weather,
-            }), 200
+        county = get_county_by_name(county_name)
+        if county is None:
+            return jsonify({"error": f"County '{county_name}' not found"}), 404
 
-        return jsonify({"error": "County name or all_counties flag is required"}), 400
+        weather = fetch_current_weather(county["latitude"], county["longitude"])
+        return jsonify({
+            "county": county["name"],
+            "latitude": county["latitude"],
+            "longitude": county["longitude"],
+            "current_weather": weather,
+        }), 200
 
-    except urllib.error.URLError as e:
-        logger.error(f"Weather API request failed: {e}")
-        return jsonify({"error": "Unable to fetch current weather"}), 502
-    except BadRequest as e:
-        logger.error(f"Bad request in predict endpoint: {str(e)}")
+    except urllib.error.URLError:
+        return jsonify({"error": "Unable to fetch current weather (network/API error)"}), 502
+    except BadRequest:
         return jsonify({"error": "Invalid JSON"}), 400
     except Exception as e:
-        logger.error(f"Error in predict endpoint: {str(e)}")
+        logger.exception("Unhandled error in /predict: %s", str(e))
         return jsonify({"error": "Internal server error"}), 500
 
 
