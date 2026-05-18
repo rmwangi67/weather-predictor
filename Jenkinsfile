@@ -16,7 +16,7 @@ pipeline {
         stage('Setup Python Environment') {
             steps {
                 sh '''
-                    sudo apt-get update
+                    sudo apt-get update -o Acquire::cdrom::mount=/dev/null || true
                     sudo apt-get install -y python3.10-venv
                     python3 -m venv venv
                     . venv/bin/activate
